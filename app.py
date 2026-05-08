@@ -79,8 +79,11 @@ def parse_pasted_orders(text: str) -> list[str]:
 # 浏览器与地址查询
 # ═══════════════════════════════════════════════════════════════
 
-async def verify_one_city(city: str, cookies: list[dict]) -> bool:
-    """验证单个城市的 Cookie 是否有效。"""
+async def verify_one_city(city: str, cookies: list[dict]) -> str:
+    """验证单个城市的 Cookie 是否有效。
+
+    返回: "ok" / "invalid" / "network_error"
+    """
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
@@ -94,22 +97,21 @@ async def verify_one_city(city: str, cookies: list[dict]) -> bool:
         await ctx.add_cookies(cookies)
         page = await ctx.new_page()
         try:
-            await page.goto("https://mcenter.ke.com/new#/workbench", wait_until="networkidle", timeout=30000)
+            await page.goto("https://mcenter.ke.com/new#/workbench", wait_until="networkidle", timeout=15000)
             await page.wait_for_timeout(3000)
             body = await page.locator("body").inner_text()
-            # 验证：有导航菜单 + 城市名出现在欢迎文本中
             has_menu = "服务单管理" in body or "退出登录" in body
             welcome = await page.locator("text=/欢迎，.*维修/").first.text_content() if await page.locator("text=/欢迎，.*维修/").count() > 0 else ""
             city_ok = city in welcome if welcome else True
-            return has_menu and city_ok
+            return "ok" if (has_menu and city_ok) else "invalid"
         except Exception:
-            return False
+            return "network_error"
         finally:
             await browser.close()
 
 
-async def verify_all_cities(city_cookies: dict[str, list[dict]], progress_placeholder=None) -> dict[str, bool]:
-    """逐一验证所有城市的 Cookie，返回 {城市: 是否有效}。"""
+async def verify_all_cities(city_cookies: dict[str, list[dict]], progress_placeholder=None) -> dict[str, str]:
+    """逐一验证所有城市的 Cookie，返回 {城市: "ok"/"invalid"/"network_error"}。"""
     results = {}
     cities = list(city_cookies.keys())
     for idx, city in enumerate(cities):
@@ -117,13 +119,16 @@ async def verify_all_cities(city_cookies: dict[str, list[dict]], progress_placeh
             progress_placeholder.text(f"正在验证: {city} ({idx + 1}/{len(cities)}) ...")
         results[city] = await verify_one_city(city, city_cookies[city])
     if progress_placeholder:
-        passed = sum(1 for v in results.values() if v)
-        failed = len(results) - passed
-        if failed == 0:
-            progress_placeholder.text(f"✅ 全部 {len(results)} 个城市验证通过")
+        ok_count = sum(1 for v in results.values() if v == "ok")
+        net_err = sum(1 for v in results.values() if v == "network_error")
+        invalid = sum(1 for v in results.values() if v == "invalid")
+        if net_err and not invalid:
+            progress_placeholder.text(f"⚠️ 网络不通（{net_err}城），Cookie 已加载但未验证 — 查询时会报具体错误")
+        elif invalid:
+            failed_names = [c for c, v in results.items() if v == "invalid"]
+            progress_placeholder.text(f"⚠️ {ok_count}/{len(results)} 通过 | 失败: {', '.join(failed_names)}")
         else:
-            failed_names = [c for c, v in results.items() if not v]
-            progress_placeholder.text(f"⚠️ {passed}/{len(results)} 通过 | 失败: {', '.join(failed_names)}")
+            progress_placeholder.text(f"✅ 全部 {len(results)} 个城市验证通过")
     return results
 
 
@@ -249,13 +254,15 @@ with st.sidebar:
                     st.error("格式错误，请检查后重新粘贴")
                 else:
                     with st.spinner("正在验证 Cookie 有效性..."):
-                        valid = asyncio.run(verify_one_city("默认", cookies))
-                    if valid:
+                        status = asyncio.run(verify_one_city("默认", cookies))
+                    if status == "invalid":
+                        st.error("Cookie 无效或已过期，请重新获取")
+                    else:
+                        if status == "network_error":
+                            st.warning("⚠️ 网络不通，Cookie 已加载但未验证")
                         st.session_state.cookies = cookies
                         st.session_state.all_city_cookies = {"默认": cookies}
                         st.rerun()
-                    else:
-                        st.error("Cookie 无效或已过期，请重新获取")
 
     else:
         cookie_file = st.file_uploader("上传 .txt 文件", type=["txt"], label_visibility="collapsed")
@@ -279,30 +286,33 @@ with st.sidebar:
                         city_cookies_parsed, status_placeholder
                     ))
 
-                    # 存储结果
+                    # 存储结果：ok 和 network_error 都接受
                     passed = {}
                     failed = {}
-                    for city, ok in results.items():
-                        if ok:
-                            passed[city] = city_cookies_parsed[city]
-                        else:
+                    for city, status in results.items():
+                        if status == "invalid":
                             failed[city] = "Cookie 无效或已过期"
+                        else:
+                            passed[city] = city_cookies_parsed[city]
 
                     st.session_state.all_city_cookies = passed
                     st.session_state.cookie_errors = failed
 
                     if passed:
-                        # 默认选择第一个成功的城市
                         first_city = list(passed.keys())[0]
                         st.session_state.cookies = passed[first_city]
                         st.session_state.city = first_city
 
                     # 显示结果
+                    has_net_err = any(s == "network_error" for s in results.values())
                     if failed:
                         failed_names = '、'.join(failed.keys())
                         st.error(f"❌ 验证失败: {failed_names} — 请更新这些城市的 Cookie")
                     if passed:
-                        st.success(f"✅ 全部 {len(passed)} 个城市验证通过")
+                        if has_net_err and not failed:
+                            st.warning("⚠️ 网络不通，Cookie 已加载但无法验证 — 实际查询时会报具体错误")
+                        else:
+                            st.success(f"✅ 全部 {len(passed)} 个城市验证通过")
                     progress_bar.progress(1.0)
                     st.rerun()
 
@@ -313,13 +323,15 @@ with st.sidebar:
                         st.error("解析失败，请检查文件格式")
                     else:
                         with st.spinner("正在验证 Cookie ..."):
-                            valid = asyncio.run(verify_one_city("默认", cookies))
-                        if valid:
+                            status = asyncio.run(verify_one_city("默认", cookies))
+                        if status == "invalid":
+                            st.error("Cookie 无效或已过期，请重新获取")
+                        else:
+                            if status == "network_error":
+                                st.warning("⚠️ 网络不通，Cookie 已加载但未验证")
                             st.session_state.cookies = cookies
                             st.session_state.all_city_cookies = {"默认": cookies}
                             st.rerun()
-                        else:
-                            st.error("Cookie 无效或已过期，请重新获取")
 
     st.divider()
 
@@ -348,7 +360,7 @@ with st.sidebar:
 
         if errors:
             failed_names = '、'.join(errors.keys())
-            st.warning(f"⚠️ {failed_names} — Cookie 无效，需更新文件后重新验证")
+            st.error(f"❌ {failed_names} — Cookie 无效，需更新文件后重新验证")
     else:
         st.warning("🔴 请先加载 Cookie")
 
