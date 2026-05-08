@@ -6,6 +6,8 @@ import asyncio
 import io
 import re
 import random
+import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +17,14 @@ import streamlit as st
 from playwright.async_api import async_playwright
 
 st.set_page_config(page_title="贝壳工作台查询工具", page_icon="🏠", layout="wide")
+
+# 首次运行时安装 Chromium（Streamlit Cloud 环境）
+@st.cache_resource
+def install_chromium():
+    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], capture_output=True)
+    return True
+
+install_chromium()
 
 # ═══════════════════════════════════════════════════════════════
 # 常量
