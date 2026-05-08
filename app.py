@@ -239,10 +239,10 @@ with st.sidebar:
                     st.error("格式错误，请检查后重新粘贴")
                 else:
                     with st.spinner("正在验证 Cookie 有效性..."):
-                        valid = asyncio.run(verify_and_save_session(cookies))
+                        valid = asyncio.run(verify_one_city("默认", cookies))
                     if valid:
                         st.session_state.cookies = cookies
-                        st.session_state.session_saved = True
+                        st.session_state.all_city_cookies = {"默认": cookies}
                         st.rerun()
                     else:
                         st.error("Cookie 无效或已过期，请重新获取")
